@@ -1,25 +1,28 @@
 #!/bin/bash
 set -e
 
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-  DO
-  \$body\$
-  DECLARE
-    wal_level_setting TEXT;
-  BEGIN
-    SELECT current_setting('wal_level') INTO wal_level_setting;
+# Check current wal_level setting
+WAL_LEVEL=$(psql -t -c "SHOW wal_level;" --username "$POSTGRES_USER" --dbname "$POSTGRES_DB")
 
-    IF wal_level_setting != 'logical' THEN
-      EXECUTE 'DROP EXTENSION IF EXISTS timescaledb';
-      EXECUTE 'ALTER SYSTEM SET wal_level = logical';
-      EXECUTE 'ALTER SYSTEM SET max_replication_slots = 20';
-      EXECUTE 'ALTER SYSTEM SET wal_keep_size = 2048';
-      EXECUTE 'SELECT pg_reload_conf()';
-      RAISE NOTICE 'All done please restart the database and delete this service. Here is the DATABASE_URL: %', current_setting('DATABASE_URL');
-    ELSE
-      RAISE NOTICE 'DB is already configured';
-    END IF;
-  END;
-  \$body\$
-  ;
+if [[ $WAL_LEVEL != "logical" ]]; then
+    # Drop timescaledb if exists and adjust parameters
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        DROP EXTENSION IF EXISTS timescaledb;
 EOSQL
+
+    # Use ALTER SYSTEM commands outside of transaction block
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        ALTER SYSTEM SET wal_level = logical;
+        ALTER SYSTEM SET max_replication_slots = 20;
+        ALTER SYSTEM SET wal_keep_size = 2048;
+EOSQL
+
+    # Reload the configuration
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        SELECT pg_reload_conf();
+EOSQL
+
+    echo "All done please restart the database and delete this service."
+else
+    echo "DB is already configured"
+fi
